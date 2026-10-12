@@ -49,6 +49,7 @@ RU BY AL MD AD MC MN KH LA MM MO MV BS MG CI IR SY CU KP SD AF
 ## Требования
 
 - Linux-сервер, Bash и стандартные Unix-утилиты, включая `stty`.
+- `curl` на сервере для установки одной командой.
 - Права `root` и интерактивный терминал для установки и обновления.
 - Установленный и запущенный [Docker Engine](https://docs.docker.com/engine/install/).
 - Исходящий доступ по IPv4 к YouTube и Telegram API, а также доступ к Docker
@@ -62,7 +63,16 @@ Python, `curl`, `jq` и DNS-утилиты включаются в образ. D
 
 ## Установка
 
-Скачайте репозиторий и откройте его каталог. Запустите установщик без аргументов:
+На сервере с установленным и запущенным Docker выполните в интерактивном
+терминале одну команду:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thekhabaroff/GeoGoogle/main/geogoogle.sh | sudo bash
+```
+
+Команда скачает установщик из ветки `main` и запустит его с правами `root`.
+
+Если репозиторий уже скачан, откройте его каталог и запустите установщик:
 
 ```bash
 sudo bash geogoogle.sh
