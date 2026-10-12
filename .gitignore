@@ -1,0 +1,22 @@
+# В этой рабочей папке также лежат локальные сетевые конфигурации.
+# В репозиторий GeoGoogle включаем только перечисленные файлы проекта.
+/*
+!/geogoogle.sh
+!/README.md
+!/LICENSE
+!/.gitignore
+!/.gitattributes
+!/.github/
+!/scripts/
+!/tests/
+
+# Конфигурация установки и локальные секреты не публикуются.
+config.sh
+.config-backup.*
+.env
+.env.*
+*.pem
+*.key
+__pycache__/
+*.py[cod]
+.DS_Store
