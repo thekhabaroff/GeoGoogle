@@ -344,15 +344,6 @@ curl_dns() {
     curl -4 -fsSL --connect-timeout 5 --max-time 20 "${resolve_args[@]}" "$@" "$url"
 }
 
-# Сохранён список стран без рекламы из предыдущей версии скрипта.
-# Для регионов вне списка дополнительно проверяем рекламные блоки плеера.
-is_ad_free_region() {
-    case "$1" in
-        RU|BY|AL|MD|AD|MC|MN|KH|LA|MM|MO|MV|BS|MG|CI|IR|SY|CU|KP|SD|AF) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 get_region() {
     curl_dns "https://www.youtube.com" -A "$UA" -b "$YT_COOKIE" \
         | grep -oE '"GL"[[:space:]]*:[[:space:]]*"[A-Z]{2}"' \
@@ -379,16 +370,32 @@ check_ads() {
 }
 
 send_telegram() {
-    local response
-    if ! response=$(curl_dns "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" -X POST \
+    local response http_status description migrated_chat
+    # Для Telegram сохраняем JSON ошибки: общий curl_dns использует --fail.
+    if ! response=$(curl_dns "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+        --no-fail --write-out $'\n%{http_code}' -X POST \
         --data-urlencode chat_id="$CHAT_ID" --data-urlencode text="$1"); then
-        log "Ошибка отправки в Telegram; повторим при следующей проверке." >&2
+        log "Сетевая ошибка отправки в Telegram; повторим при следующей проверке." >&2
         return 1
     fi
-    if ! printf '%s' "$response" | jq -e '.ok == true' >/dev/null 2>&1; then
-        log "Telegram не подтвердил отправку; повторим при следующей проверке." >&2
-        return 1
+    http_status=${response##*$'\n'}
+    response=${response%$'\n'*}
+    if [[ "$http_status" =~ ^2[0-9][0-9]$ ]] \
+        && printf '%s' "$response" | jq -e '.ok == true' >/dev/null 2>&1; then
+        return 0
     fi
+    description=$(printf '%s' "$response" | jq -r --arg token "$BOT_TOKEN" '
+        if type == "object" and (.description | type) == "string" then
+            .description | split($token) | join("[скрыто]") | gsub("[[:cntrl:]]"; " ")
+        else empty end' 2>/dev/null) || description=""
+    log "Ошибка отправки в Telegram (HTTP $http_status): ${description:-API не подтвердил отправку}; повторим при следующей проверке." >&2
+    migrated_chat=$(printf '%s' "$response" | jq -r '
+        .parameters.migrate_to_chat_id? | select(type == "number") | tostring
+        ' 2>/dev/null) || migrated_chat=""
+    if [ -n "$migrated_chat" ]; then
+        log "Telegram сообщил новый Chat ID: $migrated_chat. Обновите настройки повторным запуском установщика." >&2
+    fi
+    return 1
 }
 
 monitor_once() {
@@ -397,11 +404,6 @@ monitor_once() {
     region=$(get_region)
     if ! [[ "$region" =~ ^[A-Z]{2}$ ]]; then
         log "Регион YouTube не получен. Мониторинг продолжается." >&2
-        return 0
-    fi
-
-    if is_ad_free_region "$region"; then
-        log "Регион YouTube: $region — без рекламы по списку."
         return 0
     fi
 
@@ -415,7 +417,7 @@ monitor_once() {
     server_ip=$(curl_dns "https://ifconfig.me")
     server_ip="${server_ip:-неизвестен}"
     send_telegram "⚠️ Нода: $NODE_NAME ($server_ip)
-YouTube определяет регион: $region — страна вне списка регионов без рекламы.
+YouTube определяет регион: $region.
 В плеере видео обнаружены рекламные блоки adPlacements.
 Следующая проверка в начале следующего часа. Пока реклама подтверждается, уведомления будут каждый час."
 }
@@ -501,7 +503,7 @@ if command -v crontab >/dev/null 2>&1; then
 fi
 
 echo "Контейнер geogoogle запущен: первая проверка в начале следующего часа, далее в HH:00."
-echo "Telegram: каждый час, только если регион вне списка стран без рекламы и найдены adPlacements."
+echo "Telegram: каждый час при подтверждённых adPlacements в любом регионе."
 echo "Healthcheck: каждые 30 секунд; проверка процесса и heartbeat планировщика."
 echo "Логи: docker logs -f geogoogle"
 echo "Остановить: docker stop geogoogle; запустить: docker start geogoogle"
