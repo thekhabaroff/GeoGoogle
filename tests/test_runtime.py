@@ -128,13 +128,22 @@ for (( iteration=0; iteration<{runs}; iteration++ )); do monitor_once; done
         self.assertEqual(result.stdout.count("SENT:"), 2)
         self.assertIn("ci-node (192.0.2.1)", result.stdout)
 
-    def test_listed_regions_skip_ad_queries_and_notifications(self):
-        result = self.monitor("RU", "ADS")
-        self.assertNotIn("SENT:", result.stdout)
-        self.assertNotIn("AD_CHECK", result.stderr)
+    def test_previously_listed_regions_check_ads_and_notify_every_run(self):
+        for region in (
+            "RU", "BY", "AL", "MD", "AD", "MC", "MN", "KH", "LA", "MM", "MO",
+            "MV", "BS", "MG", "CI", "IR", "SY", "CU", "KP", "SD", "AF",
+        ):
+            with self.subTest(region=region):
+                result = self.monitor(region, "ADS", runs=2)
+                self.assertEqual(result.stdout.count("SENT:"), 2)
+                self.assertEqual(result.stderr.count("AD_CHECK"), 2)
 
     def test_no_ads_unknown_ads_or_missing_region_do_not_notify(self):
-        for region, ads in (("US", "NOADS"), ("US", "UNKNOWN"), ("", "ADS")):
+        for region, ads in (
+            ("US", "NOADS"), ("US", "UNKNOWN"),
+            ("RU", "NOADS"), ("RU", "UNKNOWN"),
+            ("MD", "NOADS"), ("MD", "UNKNOWN"), ("", "ADS"),
+        ):
             with self.subTest(region=region, ads=ads):
                 self.assertNotIn("SENT:", self.monitor(region, ads).stdout)
 
