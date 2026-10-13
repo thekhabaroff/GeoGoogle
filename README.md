@@ -65,7 +65,7 @@ Python, `curl`, `jq` и DNS-утилиты включаются в образ. D
 curl -fsSL https://raw.githubusercontent.com/thekhabaroff/GeoGoogle/master/geogoogle.sh | sudo bash
 ```
 
-Команда скачает установщик из ветки `main` и запустит его с правами `root`.
+Команда скачает установщик из ветки `master` и запустит его с правами `root`.
 
 Если репозиторий уже скачан, откройте его каталог и запустите установщик:
 
