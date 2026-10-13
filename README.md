@@ -62,7 +62,7 @@ Python, `curl`, `jq` и DNS-утилиты включаются в образ. D
 терминале одну команду:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thekhabaroff/GeoGoogle/main/geogoogle.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/thekhabaroff/GeoGoogle/master/geogoogle.sh | sudo bash
 ```
 
 Команда скачает установщик из ветки `main` и запустит его с правами `root`.
