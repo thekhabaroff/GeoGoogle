@@ -89,6 +89,8 @@ fi
 umask 077
 mkdir -p "$INSTALL_DIR"
 chmod 700 "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/state"
+chmod 700 "$INSTALL_DIR/state"
 
 CONFIG_BACKUP=""
 INSTALL_SUCCEEDED=0
@@ -246,6 +248,13 @@ IP_TELEGRAM=""
 IP_IPECHO=""
 SLEEP_PID=""
 HEALTH_FILE="/tmp/geogoogle-health"
+REGION_STATE_FILE="/var/lib/geogoogle/last-region"
+LAST_REGION=""
+SAVED_REGION=""
+if IFS= read -r SAVED_REGION < "$REGION_STATE_FILE" 2>/dev/null \
+    && [[ "$SAVED_REGION" =~ ^[A-Z]{2}$ ]]; then
+    LAST_REGION="$SAVED_REGION"
+fi
 
 log() {
     printf '[%s] %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$*"
@@ -274,7 +283,9 @@ next_hour() {
 wait_for_hour() {
     local now previous delay
     previous=$(date +%s)
-    NEXT_RUN=$(next_hour "$previous")
+    if [ -z "${NEXT_RUN:-}" ]; then
+        NEXT_RUN=$(next_hour "$previous")
+    fi
     while true; do
         update_health || return 1
         now=$(date +%s)
@@ -284,7 +295,8 @@ wait_for_hour() {
         previous="$now"
         if [ "$now" -ge "$NEXT_RUN" ]; then
             if [ "$((now % 3600))" -lt 60 ]; then
-                # После паузы контейнера допускаем только начало текущего часа.
+                # После паузы и первой немедленной проверки принимаем текущее
+                # начало часа, если до него не больше минуты.
                 NEXT_RUN=$((now / 3600 * 3600))
                 return 0
             fi
@@ -344,6 +356,16 @@ curl_dns() {
     curl -4 -fsSL --connect-timeout 5 --max-time 20 "${resolve_args[@]}" "$@" "$url"
 }
 
+save_region() {
+    local region="$1" state_tmp="${REGION_STATE_FILE}.tmp"
+    LAST_REGION="$region"
+    if ! printf '%s\n' "$region" > "$state_tmp" 2>/dev/null \
+        || ! mv "$state_tmp" "$REGION_STATE_FILE" 2>/dev/null; then
+        rm -f "$state_tmp" 2>/dev/null || true
+        return 1
+    fi
+}
+
 get_region() {
     curl_dns "https://www.youtube.com" -A "$UA" -b "$YT_COOKIE" \
         | grep -oE '"GL"[[:space:]]*:[[:space:]]*"[A-Z]{2}"' \
@@ -375,7 +397,7 @@ send_telegram() {
     if ! response=$(curl_dns "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
         --no-fail --write-out $'\n%{http_code}' -X POST \
         --data-urlencode chat_id="$CHAT_ID" --data-urlencode text="$1"); then
-        log "Сетевая ошибка отправки в Telegram; повторим при следующей проверке." >&2
+        log "Сетевая ошибка отправки в Telegram; новая попытка будет при следующей смене региона." >&2
         return 1
     fi
     http_status=${response##*$'\n'}
@@ -388,7 +410,7 @@ send_telegram() {
         if type == "object" and (.description | type) == "string" then
             .description | split($token) | join("[скрыто]") | gsub("[[:cntrl:]]"; " ")
         else empty end' 2>/dev/null) || description=""
-    log "Ошибка отправки в Telegram (HTTP $http_status): ${description:-API не подтвердил отправку}; повторим при следующей проверке." >&2
+    log "Ошибка отправки в Telegram (HTTP $http_status): ${description:-API не подтвердил отправку}; новая попытка будет при следующей смене региона." >&2
     migrated_chat=$(printf '%s' "$response" | jq -r '
         .parameters.migrate_to_chat_id? | select(type == "number") | tostring
         ' 2>/dev/null) || migrated_chat=""
@@ -399,7 +421,7 @@ send_telegram() {
 }
 
 monitor_once() {
-    local region ad_status server_ip
+    local region ad_status server_ip region_changed ad_summary
     init_dns
     region=$(get_region)
     if ! [[ "$region" =~ ^[A-Z]{2}$ ]]; then
@@ -407,22 +429,47 @@ monitor_once() {
         return 0
     fi
 
+    region_changed=0
+    if [ "$region" != "$LAST_REGION" ]; then
+        region_changed=1
+    fi
+    if ! save_region "$region"; then
+        log "Не удалось сохранить регион; после перезапуска возможно повторное уведомление." >&2
+    fi
+
     ad_status=$(check_ads)
     case "$ad_status" in
         ADS) log "Регион YouTube: $region — обнаружены рекламные блоки adPlacements." ;;
-        NOADS) log "Регион YouTube: $region — рекламные блоки не обнаружены."; return 0 ;;
-        *) log "Регион YouTube: $region — плеер недоступен, реклама не проверена." >&2; return 0 ;;
+        NOADS) log "Регион YouTube: $region — рекламные блоки не обнаружены." ;;
+        *) log "Регион YouTube: $region — плеер недоступен, рекламные блоки проверить не удалось." >&2 ;;
     esac
+
+    if [ "$region_changed" -eq 0 ]; then
+        log "Регион YouTube: $region не изменился; уведомление не отправлено."
+        return 0
+    fi
 
     server_ip=$(curl_dns "https://ifconfig.me")
     server_ip="${server_ip:-неизвестен}"
+    case "$ad_status" in
+        ADS) ad_summary="В плеере видео обнаружены рекламные блоки adPlacements." ;;
+        NOADS) ad_summary="В плеере видео рекламные блоки adPlacements не обнаружены." ;;
+        *) ad_summary="Проверить рекламные блоки adPlacements не удалось: плеер недоступен." ;;
+    esac
     send_telegram "⚠️ Нода: $NODE_NAME ($server_ip)
 YouTube определяет регион: $region.
-В плеере видео обнаружены рекламные блоки adPlacements.
-Следующая проверка в начале следующего часа. Пока реклама подтверждается, уведомления будут каждый час."
+$ad_summary
+Уведомление отправлено из-за смены региона."
 }
 
-log "Мониторинг ноды $NODE_NAME запущен; проверки в 00 минут каждого часа."
+NEXT_RUN=$(next_hour "$(date +%s)")
+log "Мониторинг ноды $NODE_NAME запущен; первая проверка начинается сейчас, затем — в 00 минут каждого часа."
+update_health || exit 1
+if ! monitor_once; then
+    log "Проверка завершилась с ошибкой. Мониторинг продолжается." >&2
+fi
+update_health || exit 1
+
 while true; do
     if ! wait_for_hour; then
         log "Не удалось обновить состояние планировщика." >&2
@@ -432,6 +479,7 @@ while true; do
         log "Проверка завершилась с ошибкой. Мониторинг продолжается." >&2
     fi
     update_health || exit 1
+    NEXT_RUN=$((NEXT_RUN + 3600))
 done
 EOF
 
@@ -461,6 +509,7 @@ start_container() {
         --log-opt max-size=10m \
         --log-opt max-file=3 \
         --mount "type=bind,src=$INSTALL_DIR/config.sh,dst=/run/geogoogle-config.sh,readonly" \
+        --mount "type=bind,src=$INSTALL_DIR/state,dst=/var/lib/geogoogle" \
         "$IMAGE_NAME" >/dev/null || return 1
 
     echo "Ожидание состояния healthy (до 90 секунд)..."
@@ -502,8 +551,8 @@ if command -v crontab >/dev/null 2>&1; then
     fi
 fi
 
-echo "Контейнер geogoogle запущен: первая проверка в начале следующего часа, далее в HH:00."
-echo "Telegram: каждый час при подтверждённых adPlacements в любом регионе."
+echo "Контейнер geogoogle запущен: первая проверка сейчас, далее в HH:00."
+echo "Telegram: при каждой смене региона; статус adPlacements включается в сообщение."
 echo "Healthcheck: каждые 30 секунд; проверка процесса и heartbeat планировщика."
 echo "Логи: docker logs -f geogoogle"
 echo "Остановить: docker stop geogoogle; запустить: docker start geogoogle"
