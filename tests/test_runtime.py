@@ -72,10 +72,8 @@ class ScheduleTests(unittest.TestCase):
             clock = Path(directory) / "clock"
             sleeps = Path(directory) / "sleeps"
             clock.write_text("".join(f"{epoch}\n" for epoch in epochs), encoding="utf-8")
-            result = run_shell(FUNCTIONS + f"""
+            result = run_shell(f"""
 CLOCK_FILE={shlex.quote(str(clock))}
-SLEEPS={shlex.quote(str(sleeps))}
-SLEEP_PID=""
 date() {{
     if [ "$1" = +%s ]; then
         IFS= read -r epoch < "$CLOCK_FILE" || exit 2
@@ -86,6 +84,9 @@ date() {{
         printf 'test-time\\n'
     fi
 }}
+""" + FUNCTIONS + f"""
+SLEEPS={shlex.quote(str(sleeps))}
+SLEEP_PID=""
 update_health() {{ :; }}
 sleep() {{ printf '%s\\n' "$1" >> "$SLEEPS"; }}
 wait_for_hour
@@ -100,13 +101,13 @@ printf '%s\\n' "$NEXT_RUN"
         self.assertEqual(self.schedule([3500, 3500, 3530, 3560, 3590, 3600]), "3600")
 
     def test_resume_during_first_minute_uses_current_hour(self):
-        self.assertEqual(self.schedule([3500, 3630]), "3600")
+        self.assertEqual(self.schedule([3500, 3630, 3630]), "3600")
 
     def test_late_resume_skips_the_missed_hour(self):
-        self.assertEqual(self.schedule([3500, 3720, 7200]), "7200")
+        self.assertEqual(self.schedule([3500, 3720, 3720, 7200]), "7200")
 
     def test_clock_moving_back_recalculates_the_boundary(self):
-        self.assertEqual(self.schedule([3650, 3500, 3600]), "3600")
+        self.assertEqual(self.schedule([3650, 3700, 3500, 3600]), "3600")
 
 
 class NotificationTests(unittest.TestCase):
