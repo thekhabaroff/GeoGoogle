@@ -111,41 +111,67 @@ printf '%s\\n' "$NEXT_RUN"
 
 class NotificationTests(unittest.TestCase):
     def monitor(self, region, ads, runs=1):
+        regions = list(region) if isinstance(region, (list, tuple)) else [region] * runs
+        ad_results = list(ads) if isinstance(ads, (list, tuple)) else [ads] * len(regions)
+        if len(ad_results) != len(regions):
+            raise AssertionError("region and ad result sequences must have equal length")
+        region_args = " ".join(shlex.quote(value) for value in regions)
+        ad_args = " ".join(shlex.quote(value) for value in ad_results)
         result = run_shell(FUNCTIONS + f"""
 NODE_NAME=ci-node
+LAST_REGION=""
+REGION_STATE_FILE=$(mktemp)
+REGIONS=({region_args})
+AD_RESULTS=({ad_args})
 init_dns() {{ :; }}
-get_region() {{ printf '%s' {shlex.quote(region)}; }}
-check_ads() {{ printf 'AD_CHECK\\n' >&2; printf '%s' {shlex.quote(ads)}; }}
+get_region() {{ printf '%s' "${{REGIONS[$iteration]}}"; }}
+check_ads() {{ printf 'AD_CHECK\\n' >&2; printf '%s' "${{AD_RESULTS[$iteration]}}"; }}
 curl_dns() {{ printf '192.0.2.1'; }}
 send_telegram() {{ printf 'SENT:%s\\n' "$1"; }}
-for (( iteration=0; iteration<{runs}; iteration++ )); do monitor_once; done
+for (( iteration=0; iteration<${{#REGIONS[@]}}; iteration++ )); do monitor_once; done
 """)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
-    def test_confirmed_ad_region_sends_on_every_run(self):
-        result = self.monitor("US", "ADS", runs=2)
+    def test_confirmed_ad_region_notifies_only_when_region_changes(self):
+        result = self.monitor(("US", "US", "FI", "FI"), "ADS")
         self.assertEqual(result.stdout.count("SENT:"), 2)
+        self.assertEqual(result.stderr.count("AD_CHECK"), 4)
         self.assertIn("ci-node (192.0.2.1)", result.stdout)
+        self.assertIn("YouTube определяет регион: US.", result.stdout)
+        self.assertIn("YouTube определяет регион: FI.", result.stdout)
 
-    def test_previously_listed_regions_check_ads_and_notify_every_run(self):
+    def test_previously_listed_regions_check_ads_and_notify_only_once(self):
         for region in (
             "RU", "BY", "AL", "MD", "AD", "MC", "MN", "KH", "LA", "MM", "MO",
             "MV", "BS", "MG", "CI", "IR", "SY", "CU", "KP", "SD", "AF",
         ):
             with self.subTest(region=region):
-                result = self.monitor(region, "ADS", runs=2)
-                self.assertEqual(result.stdout.count("SENT:"), 2)
+                result = self.monitor((region, region), "ADS")
+                self.assertEqual(result.stdout.count("SENT:"), 1)
                 self.assertEqual(result.stderr.count("AD_CHECK"), 2)
 
-    def test_no_ads_unknown_ads_or_missing_region_do_not_notify(self):
-        for region, ads in (
-            ("US", "NOADS"), ("US", "UNKNOWN"),
-            ("RU", "NOADS"), ("RU", "UNKNOWN"),
-            ("MD", "NOADS"), ("MD", "UNKNOWN"), ("", "ADS"),
-        ):
-            with self.subTest(region=region, ads=ads):
-                self.assertNotIn("SENT:", self.monitor(region, ads).stdout)
+    def test_region_change_notifies_even_without_confirmed_ads(self):
+        scenarios = (
+            (("FI", "RU"), ("ADS", "NOADS"), "В плеере видео рекламные блоки adPlacements не обнаружены."),
+            (("FI", "RU"), ("ADS", "UNKNOWN"), "Проверить рекламные блоки adPlacements не удалось: плеер недоступен."),
+            (("RU",), ("NOADS",), "В плеере видео рекламные блоки adPlacements не обнаружены."),
+            (("MD",), ("UNKNOWN",), "Проверить рекламные блоки adPlacements не удалось: плеер недоступен."),
+        )
+        for regions, ad_results, expected_status in scenarios:
+            with self.subTest(regions=regions, ads=ad_results):
+                result = self.monitor(regions, ad_results)
+                self.assertEqual(result.stdout.count("SENT:"), len(regions))
+                self.assertIn(expected_status, result.stdout)
+
+    def test_same_region_does_not_notify_again_when_ad_status_changes(self):
+        result = self.monitor(("US", "US"), ("NOADS", "ADS"))
+        self.assertEqual(result.stdout.count("SENT:"), 1)
+        self.assertIn("Регион YouTube: US не изменился; уведомление не отправлено.", result.stdout)
+
+    def test_missing_region_does_not_notify(self):
+        result = self.monitor(("",), "ADS")
+        self.assertNotIn("SENT:", result.stdout)
 
 
 class HealthTests(unittest.TestCase):
